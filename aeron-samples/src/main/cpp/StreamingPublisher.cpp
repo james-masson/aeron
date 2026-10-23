@@ -46,6 +46,7 @@ static const char optLinger   = 'l';
 static const char optLength   = 'L';
 static const char optRandLen  = 'r';
 static const char optProgress = 'P';
+static const char optRate     = 'R';
 
 struct Settings
 {
@@ -57,6 +58,7 @@ struct Settings
     int lingerTimeoutMs = samples::configuration::DEFAULT_LINGER_TIMEOUT_MS;
     bool randomMessageLength = samples::configuration::DEFAULT_RANDOM_MESSAGE_LENGTH;
     bool progress = samples::configuration::DEFAULT_PUBLICATION_RATE_PROGRESS;
+    std::int64_t messagesPerSec = 0; // 0 = unlimited
 };
 
 Settings parseCmdLine(CommandOptionParser &cp, int argc, char **argv)
@@ -78,6 +80,7 @@ Settings parseCmdLine(CommandOptionParser &cp, int argc, char **argv)
     s.lingerTimeoutMs = cp.getOption(optLinger).getParamAsInt(0, 0, 60 * 60 * 1000, s.lingerTimeoutMs);
     s.randomMessageLength = cp.getOption(optRandLen).isPresent();
     s.progress = cp.getOption(optProgress).isPresent();
+    s.messagesPerSec = cp.getOption(optRate).getParamAsLong(0, 0, INT64_MAX, s.messagesPerSec);
 
     return s;
 }
@@ -127,6 +130,7 @@ int main(int argc, char **argv)
     cp.addOption(CommandOption(optMessages, 1, 1, "number          Number of Messages."));
     cp.addOption(CommandOption(optLength,   1, 1, "length          Length of Messages."));
     cp.addOption(CommandOption(optLinger,   1, 1, "milliseconds    Linger timeout in milliseconds."));
+    cp.addOption(CommandOption(optRate,     1, 1, "msgs/sec        Target send rate (0 = unlimited)."));
 
     std::shared_ptr<std::thread> rateReporterThread;
 
@@ -190,6 +194,11 @@ int main(int argc, char **argv)
             rateReporterThread = std::make_shared<std::thread>([&](){ rateReporter.run(); });
         }
 
+        const std::chrono::nanoseconds targetInterval =
+            (settings.messagesPerSec > 0) ?
+            std::chrono::nanoseconds(1000000000LL / settings.messagesPerSec) :
+            std::chrono::nanoseconds(0);
+
         do
         {
             printingActive = true;
@@ -199,6 +208,8 @@ int main(int argc, char **argv)
             {
                 rateReporter.reset();
             }
+
+            auto nextSendTime = std::chrono::high_resolution_clock::now();
 
             for (std::int64_t i = 0; i < settings.numberOfMessages && running; i++)
             {
@@ -219,6 +230,20 @@ int main(int argc, char **argv)
                 }
 
                 rateReporter.onMessage(1, length);
+
+                if (targetInterval.count() > 0)
+                {
+                    nextSendTime += targetInterval;
+                    const auto now = std::chrono::high_resolution_clock::now();
+                    if (nextSendTime > now)
+                    {
+                        std::this_thread::sleep_for(nextSendTime - now);
+                    }
+                    else
+                    {
+                        nextSendTime = now; // behind schedule — don't burst to catch up
+                    }
+                }
             }
 
             if (nullptr == rateReporterThread)

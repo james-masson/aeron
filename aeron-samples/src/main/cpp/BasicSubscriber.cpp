@@ -15,6 +15,7 @@
  */
 
 #include <cstdint>
+#include <climits>
 #include <thread>
 #include <csignal>
 
@@ -38,6 +39,8 @@ static const char optHelp = 'h';
 static const char optPrefix = 'p';
 static const char optChannel = 'c';
 static const char optStreamId = 's';
+static const char optQuiet = 'q';
+static const char optDelay = 'd';
 
 static const std::chrono::duration<long, std::milli> IDLE_SLEEP_MS(1);
 static const int FRAGMENTS_LIMIT = 10;
@@ -47,6 +50,8 @@ struct Settings
     std::string dirPrefix;
     std::string channel = samples::configuration::DEFAULT_CHANNEL;
     std::int32_t streamId = samples::configuration::DEFAULT_STREAM_ID;
+    bool quiet = false;
+    long long cycleDelayMs = 0;
 };
 
 Settings parseCmdLine(CommandOptionParser &cp, int argc, char **argv)
@@ -63,6 +68,8 @@ Settings parseCmdLine(CommandOptionParser &cp, int argc, char **argv)
     s.dirPrefix = cp.getOption(optPrefix).getParam(0, s.dirPrefix);
     s.channel = cp.getOption(optChannel).getParam(0, s.channel);
     s.streamId = cp.getOption(optStreamId).getParamAsInt(0, 1, INT32_MAX, s.streamId);
+    s.quiet = cp.getOption(optQuiet).isPresent();
+    s.cycleDelayMs = cp.getOption(optDelay).getParamAsLong(0, 0, LLONG_MAX, s.cycleDelayMs);
 
     return s;
 }
@@ -86,6 +93,8 @@ int main(int argc, char **argv)
     cp.addOption(CommandOption(optPrefix,   1, 1, "dir         Prefix directory for aeron driver."));
     cp.addOption(CommandOption(optChannel,  1, 1, "channel     Channel."));
     cp.addOption(CommandOption(optStreamId, 1, 1, "streamId    Stream ID."));
+    cp.addOption(CommandOption(optQuiet,    0, 0, "            Quiet mode — suppress per-message output."));
+    cp.addOption(CommandOption(optDelay,    1, 1, "ms          Delay per poll cycle in ms (simulates slow consumer)."));
 
     try
     {
@@ -140,13 +149,19 @@ int main(int argc, char **argv)
             << (channelStatus == ChannelEndpointStatus::CHANNEL_ENDPOINT_ACTIVE ? "ACTIVE" : std::to_string(channelStatus))
             << std::endl;
 
-        FragmentAssembler fragmentAssembler(printStringMessage());
+        FragmentAssembler fragmentAssembler(settings.quiet
+            ? fragment_handler_t([](const AtomicBuffer &, util::index_t, util::index_t, const Header &){})
+            : printStringMessage());
         fragment_handler_t handler = fragmentAssembler.handler();
         SleepingIdleStrategy idleStrategy(IDLE_SLEEP_MS);
 
         while (running)
         {
             const int fragmentsRead = subscription->poll(handler, FRAGMENTS_LIMIT);
+            if (settings.cycleDelayMs > 0)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(settings.cycleDelayMs));
+            }
             idleStrategy.idle(fragmentsRead);
         }
     }

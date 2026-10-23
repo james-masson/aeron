@@ -93,7 +93,13 @@ int main(int argc, char **argv)
     aeron_fragment_assembler_t *fragment_assembler = NULL;
     const char *channel = DEFAULT_CHANNEL;
     const char *aeron_dir = NULL;
-    const uint64_t idle_duration_ns = UINT64_C(1000) * UINT64_C(1000); /* 1ms */
+    const char *delay_env = getenv("SUBSCRIBER_DELAY");
+    uint64_t idle_duration_ns = 0;
+    if (delay_env != NULL && *delay_env != '\0')
+    {
+        uint64_t delay_us = (uint64_t)strtoull(delay_env, NULL, 10);
+        idle_duration_ns = delay_us * UINT64_C(1000); /* μs → ns */
+    }
     int32_t stream_id = DEFAULT_STREAM_ID;
 
     while ((opt = getopt(argc, argv, "hvc:p:s:")) != -1)
